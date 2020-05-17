@@ -24,7 +24,7 @@
 #define EOF_PACKET     'E'
 
 int payload_len = 1024;
-int debug = 5;
+int debug = 1;
 
 struct packet {
 	char type;
@@ -60,10 +60,14 @@ void hex_dump(char *mem, int len) {
 	}
 }
 
-// add packet to queue
-packet_queue_t *add_packet_to_queue(packet_queue_t *this, packet_queue_t **head, long seq) {
+// add packet to queue, in sequence order
+// TODO: We only add packets in order, so the more packets are added the more traversal
+// we need to do, if we knew where the last one was, we could append easily.
+packet_queue_t *insert_packet_in_queue(packet_queue_t *this, packet_queue_t **head, packet_queue_t **tail, long seq) {
 	packet_queue_t *insert = *head;
 	packet_queue_t *prev = 0;
+
+	if (debug > 4) printf("INSERT_PACKET\n");
 	
 	// Find insertion point
 	while (insert && insert->packet->seq < seq) {
@@ -77,40 +81,76 @@ packet_queue_t *add_packet_to_queue(packet_queue_t *this, packet_queue_t **head,
 	if (insert) {
 		// Insert packet into list
 		if (prev) {
-			prev->next = this;
+			prev->next = this;  // insert after previous
 		} else {
-			*head = this;
+			*head = this;		// insert at top of list
 		}
 	} else {
-		// Append packet to list
+		// Append packet to possibly empty list
 		if (prev) {
-			prev->next = this;
+			*tail = prev->next = this;	// prev is last entry
 		} else {
-			*head = this;
+			*tail = *head = this;		// was empty list
 		}
 	}
 
 	return this;
 }
 
-packet_queue_t *remove_packet_from_queue(packet_queue_t **head, long seq) {
-	packet_queue_t *entry = *head;
-	packet_queue_t *prev = NULL;
-	while (entry && entry->packet->seq != seq) {
-		prev = entry;
+// add packet to end of queue.                                                                                      
+packet_queue_t *append_packet_to_queue(packet_queue_t *this, packet_queue_t **head, packet_queue_t **tail, long seq) { 
+	if (debug > 4) printf("APPEND_PACKET\n");
+	this->next = NULL;
+	return *head ? (*tail = (*tail)->next = this) : (*tail = *head = this);
+}
+
+void dump_queue(packet_queue_t *head, packet_queue_t *tail, int queued) {
+	printf(" PACKET QUEUE LENGTH %d HEAD %p TAIL %p\n", queued, head, tail);
+	packet_queue_t *entry = head;
+	while (entry) {
+		printf("  ENTRY %11p NEXT %11p PACKET %11p TYPE %c SEQ %ld LENGTH %4d PAYLOAD %11p\n", entry, entry->next, entry->packet, entry->packet->type, (long)entry->packet->seq, entry->packet->length, entry->packet->payload);
 		entry = entry->next;
 	}
-	if (entry) {
-		if (prev) {
-			prev->next = entry->next;
+}
+
+// Remove acked packet. Note: If we receive an ACK for seq 10, we know the
+// server has accepted and acknowledged all packets up to and including 10
+// even though we may not have received the ack, so we treat any packet whos
+// sequense is less than or equal to this ack, as acknowledged, and remove it
+// from the list.
+void remove_acked_packets_from_queue(packet_queue_t **head, packet_queue_t **tail, long seq, int *queued) {
+	if (debug > 4) printf("REMOVE_ACKED_PACKETS\n");
+	packet_queue_t *entry = *head;
+	packet_queue_t *prev = NULL;
+	while (entry) {
+		if (debug > 8) printf("ENTRY %p SEQ %ld ACK %ld\n", entry, (long)entry->packet->seq, seq);
+		if (entry->packet->seq <= seq) {
+			packet_queue_t *e = entry;
+			if (debug > 4) dump_queue(*head, *tail, *queued);
+			if (debug > 5) printf("REMOVE %p ACKED PACKET %p: TYPE:%c SEQ:%ld LENGTH:%d\n", entry, entry->packet, entry->packet->type, (long)entry->packet->seq, entry->packet->length);
+			if (debug > 8) printf("PREV %p HEAD %p TAIL %p NEXT %p\n", prev, *head, *tail, entry->next);
+			if (prev) {
+				prev->next = entry->next;
+			} else {
+				*head = entry->next;
+			}
+			if (entry == *tail) {
+				*tail = prev;
+			}
+			(*queued)--;
+			entry = entry->next; // prev is the same as before
+			free(e->packet);
+			free(e);
+			if (debug > 4) dump_queue(*head, *tail, *queued);
 		} else {
-			*head = entry->next;
+			prev = entry;
+			entry = entry->next;
 		}
 	}
-	return entry;
 }
 
 packet_queue_t *find_packet_in_queue(packet_queue_t *entry, long seq) {
+printf("FIND_PACKET\n");
 	while (entry && entry->packet->seq != seq) {
 		entry = entry->next;
 	}
@@ -134,9 +174,8 @@ int up_server(int argc, char **argv) {
 	packet_t *packet = NULL;
 
 	packet_queue_t *packet_queue = NULL;
+	packet_queue_t *queue_tail = NULL;
 	int queued = 0;
-
-	printf("SERVER\n");
 
 	// Parse arguments
 	shift;
@@ -182,6 +221,8 @@ int up_server(int argc, char **argv) {
 			// remove packet from the queue
 			packet_queue_t *this = packet_queue;
 			packet_queue = packet_queue->next;
+			if (!packet_queue) queue_tail = NULL;
+			queued --;
 
 			// TODO: Write packet to file
 			seq_w++;
@@ -190,6 +231,8 @@ int up_server(int argc, char **argv) {
 			// Free packet
 			free(this->packet);
 			free(this);
+
+			if (debug > 4) dump_queue(packet_queue, queue_tail, queued);
 		}
 
 		// Allocate a packet buffer if needed
@@ -202,7 +245,7 @@ int up_server(int argc, char **argv) {
 		}
 
 		len = sizeof(caddr);
-		printf("RECV FROM %lx:%d...\n", (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
+		if (debug > 5) printf("RECV FROM %lx:%d...\n", (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
 		if ((n = recvfrom(sockfd, packet, HEADER_LEN + payload_len, 0, (struct sockaddr *) &caddr, &len)) < 0) {
 
 			perror("recvfrom");
@@ -250,9 +293,10 @@ int up_server(int argc, char **argv) {
 					packet = this->packet = realloc(packet, HEADER_LEN + packet->length);
 					this->retransmits = 0;
 
-					this = add_packet_to_queue(this, &packet_queue, packet->seq);
+					this = insert_packet_in_queue(this, &packet_queue, &queue_tail, packet->seq);
 					if (this) {
 						queued++;
+						if (debug > 4) dump_queue(packet_queue, queue_tail, queued);
 						if (debug > 5) printf("SERVER QUEUE PACKET [%d]: type%c seq:%ld len:%d FROM %lx:%d", queued, packet->type, (long)packet->seq, n, (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
 					}
 
@@ -306,6 +350,7 @@ int up_client(int argc, char **argv) {
 	int n;
 	int len;
 	packet_queue_t *packet_queue = NULL;
+	packet_queue_t *queue_tail = NULL;
 	int queued = 0;
 	int eof = 0;
 
@@ -333,7 +378,7 @@ int up_client(int argc, char **argv) {
 	// Read standard input
 	while (!eof || queued) {
 
-		if (debug > 5) printf("eof:%d queued:%d\n", eof, queued);
+		if (debug > 4) printf("-- eof:%d queued:%d\n", eof, queued);
 
 		// As long as the packet queue is not full, read from standard input
 		// and send to server, adding packet to packet queue
@@ -372,9 +417,10 @@ int up_client(int argc, char **argv) {
 				this->retransmits = 0;
 
 				if (debug > 8) printf("ADD PACKET TO QUEUE %p\n", this);
-				this = add_packet_to_queue(this, &packet_queue, packet->seq);
+				this = append_packet_to_queue(this, &packet_queue, &queue_tail, packet->seq);
 				if (this) {
 					queued++;
+					if (debug > 4) dump_queue(packet_queue, queue_tail, queued);
 					if (debug > 8) printf("QUEUE ENTRY %p COUNT %d\n", this, queued);
 					if (debug > 5) printf("CLIENT QUEUE PACKET [%p]: TYPE:%c SEQ:%ld LENGTH:%d\n", packet, packet->type, (long)packet->seq, packet->length);
 				} else {
@@ -427,15 +473,7 @@ int up_client(int argc, char **argv) {
 				// Process packet
 				switch(packet->type) {
 				case 'A': // handle ack 
-					{
-						packet_queue_t *removed = remove_packet_from_queue(&packet_queue, packet->seq);
-						if (removed) {
-							queued--;
-							if (debug > 5) printf("REMOVED ACKED PACKET [%d]: TYPE:%c SEQ:%ld LENGTH:%d\n", queued, removed->packet->type, (long)removed->packet->seq, removed->packet->length);
-							free(removed->packet);
-							free(removed);
-						}
-					}
+					remove_acked_packets_from_queue(&packet_queue, &queue_tail, packet->seq, &queued);
 					break;
 				case 'N': // handle nack
 					{
@@ -466,6 +504,10 @@ int up_client(int argc, char **argv) {
 /////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc, char **argv) {
+	if (argc > 1 && strncmp(argv[1], "--debug=",8) == 0) {
+		debug = atoi(argv[1]+8);
+		shift;
+	}
 	if (argc > 1 && strcmp(argv[1], "--receive") == 0) return up_server(argc--, argv++);
 	return up_client(argc, argv);
 }
