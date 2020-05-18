@@ -47,6 +47,18 @@ typedef struct packet_queue packet_queue_t;
 
 #define PACKET_QUEUE_LIMIT 1000
 
+pid_t ssh_run_server(char *remote, char *host, int port) {
+	pid_t pid = fork();
+	if (pid == 0) {
+		char cmd[1024];
+		if (debug > 0) printf("RUN SERVER: ssh %s up --receive %s %d\n", remote, host, port);
+		close(0);
+		sprintf(cmd, "/home/adf/up/up --debug=0 --receive %s %d >/tmp/up.out 2>&1", host, port);
+		execl("/usr/bin/ssh", "-T", remote, cmd, NULL);
+	}
+	return pid;
+}
+
 void hex_dump(char *mem, int len) {
 	int i, o = 0;
 	while (len > 0) {
@@ -161,7 +173,7 @@ printf("FIND_PACKET\n");
 // UP Server
 ///////////////////////////////////////////////////////////////////////////////////
 
-// up --receive client-ip port
+// up --receive server-ip port [client-ip]
 int up_server(int argc, char **argv) {
 	struct sockaddr_in addr, caddr;
 	int seq_w = 0;
@@ -178,7 +190,6 @@ int up_server(int argc, char **argv) {
 	int queued = 0;
 
 	// Parse arguments
-	shift;
 	ip = shift;
 	port = ishift;
 
@@ -192,7 +203,6 @@ int up_server(int argc, char **argv) {
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
-	// addr.sin_addr.s_addr = htonl(INADDR_ANY);
 	addr.sin_addr.s_addr = inet_addr(ip);
 
 	// Bind listening socket
@@ -203,13 +213,11 @@ int up_server(int argc, char **argv) {
 
 	if (debug > 5) printf("SOCKET %x LISTENING ON %lx:%d\n", sockfd, (unsigned long)addr.sin_addr.s_addr, port);
 
-	// Initialise client address
+	// Initialise client address (we don't know it yet)
 	memset(&caddr, 0, sizeof(struct sockaddr_in));
 	caddr.sin_family = AF_INET;
 	caddr.sin_port = htons(port);
-	caddr.sin_addr.s_addr = inet_addr(ip);
-
-	if (debug > 5) printf("CLIENT ADDR: %s:%d\n", ip, port);
+	caddr.sin_addr.s_addr = INADDR_ANY;
 
 	while (!eof) {
 		if (debug > 8) printf("NOT DONE\n");
@@ -259,10 +267,16 @@ int up_server(int argc, char **argv) {
 				printf("PACKET SEQ %d SEQ_W %d\n", packet->seq, seq_w);
 			}
 
-			if (packet->seq == seq_w) {
+			if (packet->type == 'S') {			// client sent SYN
+				packet_t syn;
+				syn.type = 'S';
+				if (debug > 0) printf("SERVER SYN: TYPE:%c LENGTH:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
+				sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) &caddr, len);
+			}
+			else if (packet->seq == seq_w) {
 				if (packet->type == 'E') {
 					// EOF
-					printf("EOF\n");
+					if (debug > 0) printf("EOF\n");
 					eof = 1;
 				} else {
 					// write data to file
@@ -283,8 +297,8 @@ int up_server(int argc, char **argv) {
 					if (debug > 0) printf("SERVER ACK: type:%c seq:%ld len:%d TO %lx:%d\n", ack.type, (long)ack.seq, OFFSETOF(ack,length), (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
 					sendto(sockfd, &ack, OFFSETOF(ack,length), 0, (struct sockaddr *) &caddr, len);
 				}
-
-			} else if (packet->seq > seq_w) {
+			}
+			else if (packet->seq > seq_w) {
 				// only store packets not already written, to the queue, and only if room
 				packet_queue_t *this = NULL;
 				if (queued < PACKET_QUEUE_LIMIT && (this = malloc(sizeof (packet_queue_t)))) {
@@ -344,21 +358,33 @@ int up_client(int argc, char **argv) {
 	struct sockaddr_in addr;
 	int seq = 0;
 	long offset = 0;
-	char *remote;
 	int sockfd;
-	int port;
 	int n;
 	int len;
 	packet_queue_t *packet_queue = NULL;
 	packet_queue_t *queue_tail = NULL;
 	int queued = 0;
 	int eof = 0;
+	char *host;
+	pid_t server;
+	char *remote;
+	int port;
+	int starting = 1;
 
-	// Parse arguments
-	remote = shift;		// remote IP or user@host for ssh connection
+	/* Args: <address> <port> */
+	remote = shift;
 	port = ishift;
 
 	if (debug > 5) printf("CLIENT: REMOTE IS %s:%d\n", remote, port);
+
+	// Find host name if user@host format
+	host = strchr(remote,'@');
+	host = host ? ++host : remote;
+
+	// possibly run the server via ssh
+	if (host != remote) {
+		server = ssh_run_server(remote, host, port);
+	}
 
 	// Open Socket
 	if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
@@ -370,7 +396,7 @@ int up_client(int argc, char **argv) {
 	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(port);
-	if (!inet_aton(remote, &addr.sin_addr)) {
+	if (!inet_aton(host, &addr.sin_addr)) {
 		perror("invalid address");
 		return EXIT_FAILURE;
 	}
@@ -378,11 +404,18 @@ int up_client(int argc, char **argv) {
 	// Read standard input
 	while (!eof || queued) {
 
-		if (debug > 4) printf("-- eof:%d queued:%d\n", eof, queued);
+		if (debug > 4) printf("-- eof:%d queued:%d starting:%d\n", eof, queued, starting);
+
+		if (starting) {
+			packet_t syn;
+			syn.type = 'S';
+			if (debug > 0) printf("CLIENT SYN: TYPE:%c LEN:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
+			sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) &addr, len);
+		}
 
 		// As long as the packet queue is not full, read from standard input
 		// and send to server, adding packet to packet queue
-		if (!eof && queued < PACKET_QUEUE_LIMIT) {
+		if (!starting && !eof && queued < PACKET_QUEUE_LIMIT) {
 			
 			// Allocate a packet buffer
 			if (!packet) {
@@ -441,9 +474,9 @@ int up_client(int argc, char **argv) {
 			}
 		}
 
-		if (queued) {
+		if (queued || starting) {
 
-			if (debug > 5) printf("PROCESS QUEUE [SIZE:%d]\n", queued);
+			if (debug > 5) printf("QUEUE SIZE %d\n", queued);
 
 			// Allocate a packet buffer
 			if (!packet) {
@@ -475,6 +508,9 @@ int up_client(int argc, char **argv) {
 				case 'A': // handle ack 
 					remove_acked_packets_from_queue(&packet_queue, &queue_tail, packet->seq, &queued);
 					break;
+				case 'S': // server has started
+					starting = 0;
+					break;
 				case 'N': // handle nack
 					{
 						packet_queue_t *entry = find_packet_in_queue(packet_queue, packet->seq);
@@ -486,6 +522,12 @@ int up_client(int argc, char **argv) {
 						}
 					}
 					break;
+				}
+			} else {
+				if (starting) {
+					if (debug > 8) printf("NO RESPONSE usleep %dms\n", starting * 10);
+					usleep(10 * starting * 1000);
+					if (starting < 100) starting *= 2;
 				}
 			}
 		}
@@ -504,10 +546,21 @@ int up_client(int argc, char **argv) {
 /////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc, char **argv) {
+
+	int status;
+
+	/* Option: Debug Level */
 	if (argc > 1 && strncmp(argv[1], "--debug=",8) == 0) {
 		debug = atoi(argv[1]+8);
 		shift;
 	}
-	if (argc > 1 && strcmp(argv[1], "--receive") == 0) return up_server(argc--, argv++);
+
+	/* Check for server mode */
+	if (argc > 1 && strcmp(argv[1], "--receive") == 0) {
+		shift;
+		return up_server(argc, argv);
+	}
+
+	/* Run client mode */
 	return up_client(argc, argv);
 }
