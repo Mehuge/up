@@ -6,6 +6,7 @@
 #include <time.h> 
 #include <sys/types.h> 
 #include <sys/socket.h> 
+#include <sys/time.h> 
 #include <arpa/inet.h> 
 #include <netinet/in.h> 
 
@@ -23,8 +24,9 @@
 #define PAYLOAD_PACKET 'P'
 #define EOF_PACKET     'E'
 
-int payload_len = 1024;
+int payload_len = 1400;
 int debug = 1;
+int show_stats = 1;
 
 struct packet {
 	char type;
@@ -45,6 +47,19 @@ struct packet_queue {
 
 typedef struct packet_queue packet_queue_t;
 
+struct stats {
+	struct timeval start;
+	struct timeval transfer_start;
+	struct timeval transfer_end;
+	long reads;
+	long bytes;
+	long packets_sent;
+	long packets_received;
+	long retransmits;
+};
+
+typedef struct stats stats_t;
+
 #define PACKET_QUEUE_LIMIT 1000
 
 pid_t ssh_run_server(char *remote, char *host, int port) {
@@ -53,23 +68,24 @@ pid_t ssh_run_server(char *remote, char *host, int port) {
 		char cmd[1024];
 		if (debug > 0) printf("RUN SERVER: ssh %s up --receive %s %d\n", remote, host, port);
 		close(0);
-		sprintf(cmd, "/home/adf/up/up --debug=0 --receive %s %d >/tmp/up.out 2>&1", host, port);
+		sprintf(cmd, "/home/adf/up/up --debug=%d --receive %s %d >/tmp/up.out 2>&1", 9, host, port);
 		execl("/usr/bin/ssh", "-T", remote, cmd, NULL);
 	}
 	return pid;
 }
 
-void hex_dump(char *mem, int len) {
+void hex_dump(unsigned char *mem, int len) {
 	int i, o = 0;
 	while (len > 0) {
 		printf("%08x", o);
 		for (i = 0; i < 32 && len > 0; i++, len--) {
-			printf(" %02x", *mem);
+			printf(" %02x", (int) *mem);
 			mem++;
 		}
 		o += 32;
 		printf("\n");
 	}
+	fflush(stdout);
 }
 
 // add packet to queue, in sequence order
@@ -285,7 +301,7 @@ int up_server(int argc, char **argv) {
 						if (debug > 5) hex_dump(packet->payload, packet->length);
 					}
 				}
-				seq_w ++;
+				seq_w++;
 
 				// Ack this packet
 				{
@@ -326,7 +342,7 @@ int up_server(int argc, char **argv) {
 					packet_t nack;
 					nack.type = 'N';
 					nack.reserved[0] = nack.reserved[1] = nack.reserved[2] = 0;
-					nack.seq = packet->seq;
+					nack.seq = seq_w;
 					if (debug > 0) printf("SERVER NACK: type:%c seq:%ld len:%d TO %lx:%d\n", nack.type, (long)nack.seq, OFFSETOF(nack,length), (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
 					sendto(sockfd, &nack, OFFSETOF(nack,length), 0, (struct sockaddr *) &caddr, len);
 				}
@@ -370,6 +386,11 @@ int up_client(int argc, char **argv) {
 	char *remote;
 	int port;
 	int starting = 1;
+	stats_t stats;
+
+	// Initialise statistics
+	memset(&stats, 0, sizeof(stats));
+	gettimeofday(&stats.start, NULL);
 
 	/* Args: <address> <port> */
 	remote = shift;
@@ -411,6 +432,7 @@ int up_client(int argc, char **argv) {
 			syn.type = 'S';
 			if (debug > 0) printf("CLIENT SYN: TYPE:%c LEN:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
 			sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) &addr, len);
+			stats.packets_sent++;
 		}
 
 		// As long as the packet queue is not full, read from standard input
@@ -430,9 +452,9 @@ int up_client(int argc, char **argv) {
 			if (debug > 5) printf("READ STANDARD INPUT\n");
 			n = read(0, &(packet->payload), payload_len);
 			if (n >= 0) {
-				if (debug > 5) printf("READ %d BYTES FROM STDIN OFFSET %ld\n", n, offset);
+				if (debug > 5) printf("READ %d BYTES FROM STDIN OFFSET %ld\n", n, stats.bytes);
 				if (debug > 5) hex_dump(packet->payload, n);
-				offset += n;
+				stats.bytes += n;
 				if (n == 0) eof = 1;
 
 				packet->type = eof ? EOF_PACKET : PAYLOAD_PACKET;
@@ -464,6 +486,7 @@ int up_client(int argc, char **argv) {
 				// Send payload
 				if (debug > 0) printf("SEND PACKET [%p]: TYPE:%c SEQ:%ld LENGTH:%d TO %lx:%d\n", packet, packet->type, (long)packet->seq, packet->length, (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
 				sendto(sockfd, packet, HEADER_LEN + n, 0, (struct sockaddr *) &addr, sizeof(addr));
+				stats.packets_sent++;
 				if (debug > 5) printf("SEND DONE\n");
 
 				// We gave the packet to the packet queue
@@ -502,6 +525,7 @@ int up_client(int argc, char **argv) {
 
 			if (n > 0) {
 				if (debug > 0) printf("RESPONSE: TYPE:%c SEQ:%ld LEN:%d LENGTH:%d\n", packet->type, (long)packet->seq, n, n >= 12 ? packet->length : 0);
+				stats.packets_received++;
 
 				// Process packet
 				switch(packet->type) {
@@ -510,6 +534,7 @@ int up_client(int argc, char **argv) {
 					break;
 				case 'S': // server has started
 					starting = 0;
+					gettimeofday(&stats.transfer_start, NULL);
 					break;
 				case 'N': // handle nack
 					{
@@ -518,6 +543,8 @@ int up_client(int argc, char **argv) {
 							// resend this packet
 							if (debug > 5) printf("RESEND NACKED PACKET [%d]: TYPE:%c SEQ:%ld LENGTH:%d\n", queued, entry->packet->type, (long)entry->packet->seq, entry->packet->length);
 							sendto(sockfd, entry->packet, HEADER_LEN + entry->packet->length, 0, (struct sockaddr *) &addr, sizeof(addr));
+							stats.packets_sent++;
+							stats.retransmits++;
 							entry->retransmits++;
 						}
 					}
@@ -538,6 +565,17 @@ int up_client(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
+	gettimeofday(&stats.transfer_end, NULL);
+
+	if (debug > 0 || show_stats) {
+		int64_t start = stats.transfer_start.tv_sec * 1000000 + stats.transfer_start.tv_usec;
+		int64_t end = stats.transfer_end.tv_sec * 1000000 + stats.transfer_end.tv_usec;
+		int64_t startup = stats.start.tv_sec * 1000000 + stats.start.tv_usec;
+		long bps = (long) (stats.bytes / ((end - start) / 1000000.0));
+		printf("%ld bytes transfered in %ldms (%.2lf KB/s) startup %ldms\n", stats.bytes, (end - start)/1000, bps/1024.0, (start-startup)/1000);
+		printf("%ld packets received, %ld packets sent, %ld retransmissions\n", stats.packets_received, stats.packets_sent, stats.retransmits);
+	}
+
 	return 0;
 }
 
@@ -552,6 +590,18 @@ int main(int argc, char **argv) {
 	/* Option: Debug Level */
 	if (argc > 1 && strncmp(argv[1], "--debug=",8) == 0) {
 		debug = atoi(argv[1]+8);
+		shift;
+	}
+
+	/* Option: Quiet Mode */
+	if (argc > 1 && strncmp(argv[1], "-q",2) == 0) {
+		show_stats = 0;
+		shift;
+	}
+
+	/* Option: Payload Length*/
+	if (argc > 1 && strncmp(argv[1], "--payload-len=",14) == 0) {
+		payload_len = atoi(argv[1]+14);
 		shift;
 	}
 
