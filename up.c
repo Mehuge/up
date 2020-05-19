@@ -19,10 +19,12 @@
 #define MAX_PAYLOAD 16384
 #define HEADER_LEN 12
 
-#define ACK_PACKET_ACK 'A'
-#define NAK_PACKET_NAK 'N'
-#define PAYLOAD_PACKET 'P'
+#define SYN_PACKET 'S'
+#define PAY_PACKET 'P'
+#define ACK_PACKET 'A'
+#define NAK_PACKET 'N'
 #define EOF_PACKET     'E'
+#define FIN_PACKET 'F'
 
 int payload_len = 1400;
 int debug = 1;
@@ -56,6 +58,7 @@ struct stats {
   long packets_sent;
   long packets_received;
   long retransmits;
+	long sleeping;
 };
 
 typedef struct stats stats_t;
@@ -160,16 +163,16 @@ void dump_queue(packet_queue_t *head, packet_queue_t *tail, int queued) {
 // sequense is less than or equal to this ack, as acknowledged, and remove it
 // from the list.
 void remove_acked_packets_from_queue(packet_queue_t **head, packet_queue_t **tail, long seq, int *queued) {
-  if (debug > 4) printf("REMOVE_ACKED_PACKETS\n"),fflush(stdout);
+  if (debug > 9) printf("REMOVE_ACKED_PACKETS\n"),fflush(stdout);
   packet_queue_t *entry = *head;
   packet_queue_t *prev = NULL;
   while (entry) {
-    if (debug > 8) printf("ENTRY %p SEQ %ld ACK %ld\n", entry, (long)entry->packet->seq, seq);
+    if (debug > 99) printf("ENTRY %p SEQ %ld ACK %ld\n", entry, (long)entry->packet->seq, seq);
     if (entry->packet->seq <= seq) {
       packet_queue_t *e = entry;
       if (debug > 10) dump_queue(*head, *tail, *queued);
       if (debug > 5) printf("REMOVE %p ACKED PACKET %p: TYPE:%c SEQ:%ld LENGTH:%d\n", entry, entry->packet, entry->packet->type, (long)entry->packet->seq, entry->packet->length);
-      if (debug > 8) printf("PREV %p HEAD %p TAIL %p NEXT %p\n", prev, *head, *tail, entry->next);
+      if (debug > 99) printf("PREV %p HEAD %p TAIL %p NEXT %p\n", prev, *head, *tail, entry->next);
       if (prev) {
         prev->next = entry->next;
       } else {
@@ -220,7 +223,7 @@ int send_nack(int sockfd, uint32_t want_seq, uint32_t have_seq, struct sockaddr_
 	nack.seq = htonl(want_seq);
 	*((uint32_t *)nack.payload) = htonl(have_seq);
 	nack.length = sizeof(uint32_t);
-	if (debug > 0) printf("NACK: TYPE:%c SEQ:%ld HAVE:%ld LENGTH:%d TO %lx:%d\n", nack.type,
+	if (debug > 5) printf("SEND %c SEQ:%ld HAVE:%ld LENGTH:%d TO %lx:%d\n", nack.type,
 		(long)want_seq, (long)have_seq, HEADER_LEN + nack.length, (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)
 	), fflush(stdout);
 	return sendto(sockfd, &nack, HEADER_LEN + nack.length, 0, (struct sockaddr *) addr, sizeof(*addr));
@@ -248,11 +251,28 @@ int send_nack(int sockfd, uint32_t want_seq, uint32_t have_seq, struct sockaddr_
 
 int send_ack(int sockfd, uint32_t got_seq, struct sockaddr_in *addr) {
 	packet_t ack;
-	ack.type = 'A';
+	ack.type = ACK_PACKET;
 	ack.reserved[0] = ack.reserved[1] = ack.reserved[2] = 0;
 	ack.seq = htonl(got_seq);
-	if (debug > 0) printf("ACK: TYPE:%c SEQ:%ld LENGTH:%d TO %lx:%d\n", ack.type, (long)got_seq, OFFSETOF(ack,length), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)),fflush(stdout);
+	if (debug > 5) printf("SEND %c SEQ:%ld LENGTH:%d TO %lx:%d\n", ack.type, (long)got_seq, OFFSETOF(ack,length), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)),fflush(stdout);
 	return sendto(sockfd, &ack, OFFSETOF(ack,length), 0, (struct sockaddr *)addr, sizeof(*addr));
+}
+
+// PROTOCOL: {{
+// }}
+
+int send_syn(int sockfd, struct sockaddr_in *addr) {
+	packet_t syn;
+  syn.type = SYN_PACKET;
+  if (debug > 5) printf("SEND %c LENGTH:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)),fflush(stdout);
+  return sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) addr, sizeof(*addr));
+}
+
+int send_fin(int sockfd, struct sockaddr_in *addr) {
+	packet_t fin;
+  fin.type = FIN_PACKET;
+  if (debug > 5) printf("SEND %c LENGTH:%d TO %lx:%d\n", fin.type, OFFSETOF(fin,reserved), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)),fflush(stdout);
+  return sendto(sockfd, &fin, OFFSETOF(fin,reserved), 0, (struct sockaddr *) addr, sizeof(*addr));
 }
 
 // The packet fields seq and length are sent over the wire in network byte order
@@ -276,18 +296,20 @@ void ntoh_packet(packet_t *packet) {
 // up --receive server-ip port [client-ip]
 int up_server(int argc, char **argv) {
   struct sockaddr_in addr, caddr;
-  long seq_w = 0;
-	long last_nack = 0;
+  long want_seq = 0;								// PROTOCOL: The next packet sequence we are expecting
+	long last_nack = 0;								// PROTOCOL: Time the last nack was sent
   char *ip;
   int port;
   socklen_t len;
   int n;
   int sockfd;
-  int eof = 0;
+  long eof = 0;
+	long fin = 0;
 	long ms;
 	long took;
 	int sav_errno;
   packet_t *packet = NULL;
+	stats_t stats;
 
   packet_queue_t *packet_queue = NULL;
   packet_queue_t *queue_tail = NULL;
@@ -296,6 +318,10 @@ int up_server(int argc, char **argv) {
   // Parse arguments
   ip = shift;
   port = ishift;
+
+	// Initialise stats
+  memset(&stats, 0, sizeof(stats));
+  stats.start = nowms();
 
   // Open Socket
   if ((sockfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) < 0) {
@@ -323,17 +349,14 @@ int up_server(int argc, char **argv) {
   caddr.sin_port = htons(port);
   caddr.sin_addr.s_addr = INADDR_ANY;
 
-  while (!eof) {
+  while (!fin) {
 		long ack_seq = -1;
 
-    if (debug > 8 && packet_queue) printf("- TICK - PACKET_QUEUE %p SEQ_W %ld QUEUED PACKET SEQ %ld\n", packet_queue, seq_w, (long)packet_queue->packet->seq),fflush(stdout);
+    if (debug > 8 && packet_queue) printf("- TICK - PACKET_QUEUE %p SEQ_W %ld QUEUED PACKET SEQ %ld\n", packet_queue, want_seq, (long)packet_queue->packet->seq),fflush(stdout);
 
     // Drain packet queue if we already have the next sequence of packets
-    while (packet_queue && packet_queue->packet->seq == seq_w) {
+    while (packet_queue && packet_queue->packet->seq == want_seq) {
       if (debug > 5) printf("DRAIN QUEUE\n"),fflush(stdout);
-
-			// TODO: We can just write the packets and only need to ack the last one,
-			// the client will ack all packets up to and including the ack we send.
 
       // remove packet from the queue
       packet_queue_t *this = packet_queue;
@@ -342,9 +365,16 @@ int up_server(int argc, char **argv) {
       queued --;
 
       // TODO: Write packet to file
-			ack_seq = seq_w;
-      seq_w++;
-      if (debug > 0) printf("WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", this->packet->type, this->packet->seq, this->packet->payload, this->packet->length),fflush(stdout);
+
+			// Track which packet to ack.
+			ack_seq = want_seq;
+      want_seq++;
+			if (this->packet->type == EOF_PACKET) {
+				eof = nowms();
+        if (debug > 0) printf("EOF\n"),fflush(stdout);
+			} else {
+				if (debug > 0) printf("WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", this->packet->type, this->packet->seq, this->packet->payload, this->packet->length),fflush(stdout);
+			}
 
       // Free packet
       free(this->packet);
@@ -353,7 +383,7 @@ int up_server(int argc, char **argv) {
       if (debug > 10) dump_queue(packet_queue, queue_tail, queued),fflush(stdout);
     }
 
-		/* We drained the queue, need to ack the last packet drained */
+		// We drained the queue, need to ack the last packet drained
 		if (ack_seq > -1) {
 			if (debug > 4) printf("SEND DRAIN QUEUE ACK %ld\n", ack_seq);
 			send_ack(sockfd, ack_seq, &caddr);
@@ -365,7 +395,7 @@ int up_server(int argc, char **argv) {
         perror("allocating payload buffer");
         return EXIT_FAILURE;
       }
-      if (debug > 8) printf("ALLOCATED BUFFER %p LENGTH %d\n", packet, HEADER_LEN + payload_len),fflush(stdout);
+      if (debug > 18) printf("ALLOCATED BUFFER %p LENGTH %d\n", packet, HEADER_LEN + payload_len),fflush(stdout);
     }
 
     len = sizeof(caddr);
@@ -389,12 +419,13 @@ int up_server(int argc, char **argv) {
 		else if (n < 0) {
 
 			if (last_nack > 0 && (nowms() - last_nack > 1000)) {
-				if (debug > 5) printf("RESEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld\n", seq_w, queued, last_nack);
-				send_nack(sockfd, seq_w, packet_queue->packet->seq, &caddr);
+				if (debug > 5) printf("RESEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld\n", want_seq, queued, last_nack);
+				send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
 				last_nack = nowms();
 			} else {
-				if (debug > 0) printf("NO DATA - WAIT 500us\n"),fflush(stdout);
-				usleep(500);
+				if (debug > 0) printf("NO DATA - WAIT 100us\n"),fflush(stdout);
+				usleep(100);
+				stats.sleeping += 100;
 			}
     } 
 
@@ -405,6 +436,7 @@ int up_server(int argc, char **argv) {
 		else if (n == 0) {
 			printf("DO WE EVER SEE THIS? WAIT 1ms");
 			usleep(1000);
+			stats.sleeping += 1000;
 		}
 
 		else {
@@ -414,7 +446,7 @@ int up_server(int argc, char **argv) {
 
       if (debug > 5) {
         printf("SERVER RECV: type:%c seq:%ld len:%d PAYLOAD LENGTH %d FROM %lx:%d\n", packet->type, (long)packet->seq, n, packet->length, (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port)),fflush(stdout);
-        printf("PACKET SEQ %ld SEQ_W %ld\n", (long)packet->seq, seq_w),fflush(stdout);
+        printf("PACKET SEQ %ld SEQ_W %ld\n", (long)packet->seq, want_seq),fflush(stdout);
       }
 
 			// PROTOCOL: {{
@@ -428,12 +460,17 @@ int up_server(int argc, char **argv) {
 			//   packets.
 			//
 			// }}
-      if (packet->type == 'S') {      // client sent SYN
-        packet_t syn;
-        syn.type = 'S';
-        if (debug > 0) printf("SERVER SYN: TYPE:%c LENGTH:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port)),fflush(stdout);
-        sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) &caddr, len);
+      if (packet->type == SYN_PACKET) {      // client sent SYN
+				send_syn(sockfd, &caddr);
       }
+
+			// PROTOCOL: {{
+			//   The client sends a FIN after receiving the ACK packet for the EOF packet.
+			// }}
+			else if (packet->type == FIN_PACKET) {
+				fin = nowms();
+				send_fin(sockfd, &caddr);
+			}
 
 			// PROTOCOL: {{
 			//
@@ -444,11 +481,11 @@ int up_server(int argc, char **argv) {
 			//   In either case, we A(ck) the packet.
 			//
 			// }}
-      else if (packet->seq == seq_w) {
-        if (packet->type == 'E') {
+      else if (packet->seq == want_seq) {
+        if (packet->type == EOF_PACKET) {
           // EOF
           if (debug > 0) printf("EOF\n"),fflush(stdout);
-          eof = 1;
+          eof = nowms();
         } else {
           // write data to output stream
           if (debug > 0) printf("WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", packet->type, packet->seq, packet->payload, packet->length),fflush(stdout);
@@ -456,7 +493,7 @@ int up_server(int argc, char **argv) {
             if (debug > 5) hex_dump(packet->payload, packet->length),fflush(stdout);
           }
         }
-        seq_w++;
+        want_seq++;
 				last_nack = 0;
 
         // Ack this packet
@@ -471,10 +508,10 @@ int up_server(int argc, char **argv) {
 			//   queued packets list reaches a threshold.
 			//
 			// }}
-      else if (packet->seq > seq_w) {
+      else if (packet->seq > want_seq) {
         packet_queue_t *this = NULL;
 
-				if (debug > 0) printf("OUT OF ORDER PACKET: SEQ %ld SEQ_W %ld QUEUED %d\n", (long)packet->seq, seq_w, queued),fflush(stdout);
+				if (debug > 0) printf("OUT OF ORDER PACKET: SEQ %ld SEQ_W %ld QUEUED %d\n", (long)packet->seq, want_seq, queued),fflush(stdout);
 
         // Drop packets once the queue reaches the server queue limit, or we run out of memory.
         if (queued < SERVER_PACKET_QUEUE_LIMIT && (this = malloc(sizeof (packet_queue_t)))) {
@@ -503,8 +540,8 @@ int up_server(int argc, char **argv) {
 
         // NAK packet sequence not received
         if (queued == SERVER_NACK_THRESHOLD || (last_nack > 0 && nowms() - last_nack > 1000)) {
-          if (debug > 5) printf("SEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld AGE %ld\n", seq_w, queued, last_nack, (nowms() - last_nack));
-					send_nack(sockfd, seq_w, packet_queue->packet->seq, &caddr);
+          if (debug > 5) printf("SEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld AGE %ld\n", want_seq, queued, last_nack, (nowms() - last_nack));
+					send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
 					last_nack = nowms();
         }
       }
@@ -550,6 +587,7 @@ int up_client(int argc, char **argv) {
   int port;
   int starting = 1;
   stats_t stats;
+	long throttle = 0;
 
   // Initialise statistics
   memset(&stats, 0, sizeof(stats));
@@ -585,21 +623,28 @@ int up_client(int argc, char **argv) {
     return EXIT_FAILURE;
   }
 
-  // Read standard input
+  // Protocol loops runs while we have input, or there are queued (unacked) packets.
   while (!eof || queued) {
+
+		if (throttle > 0) {
+			printf("USLEEP %ld\n", throttle);
+			usleep(throttle);
+			stats.sleeping += throttle;
+		}
 
     if (debug > 4) printf("-- eof:%d queued:%d starting:%d\n", eof, queued, starting);
 
+		// PROTOCOL: {{
+		// 	 If starting, send a SYN packet to the server. The server will respond by 
+		// 	 sending a SYN as an acknowledgement when it is ready.
+		// }}
     if (starting) {
-      packet_t syn;
-      syn.type = 'S';
-      if (debug > 0) printf("CLIENT SYN: TYPE:%c LEN:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
-      sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) &addr, len);
+			send_syn(sockfd, &addr);
       stats.packets_sent++;
     }
 
     // As long as the packet queue is not full, read from standard input
-    // and send to server, adding packet to packet queue
+    // and send to server, adding the packet to packet queue
     if (!starting && !eof && queued < CLIENT_PACKET_QUEUE_LIMIT) {
       
       // Allocate a packet buffer
@@ -616,22 +661,22 @@ int up_client(int argc, char **argv) {
       n = read(0, &(packet->payload), payload_len);
       if (n >= 0) {
         if (debug > 5) printf("READ %d BYTES FROM STDIN OFFSET %ld\n", n, stats.bytes);
-        if (debug > 5) hex_dump(packet->payload, n),fflush(stdout);
+        if (debug > 14) hex_dump(packet->payload, n),fflush(stdout);
         stats.bytes += n;
         if (n == 0) eof = 1;
 
-        packet->type = eof ? EOF_PACKET : PAYLOAD_PACKET;
+        packet->type = eof ? EOF_PACKET : PAY_PACKET;
         packet->seq = seq++;
         packet->length = n;
-        if (debug > 5) printf("CLIENT SEND: SEQ:%ld LENGTH:%d\n", (long)packet->seq, packet->length);
+        if (debug > 5) printf("CLIENT WILL SEND: SEQ:%ld LENGTH:%d\n", (long)packet->seq, packet->length);
 
         // Add packet to waiting for ack queue
-        if (debug > 8) printf("ALLOCATE QUEUE ENTRY\n");
+        if (debug > 18) printf("ALLOCATE QUEUE ENTRY\n");
         packet_queue_t *this = malloc(sizeof(packet_queue_t));
         this->ts = time(0);
-        if (debug > 8) printf("REALLOCATE QUEUED PACKET %p TO LENGTH %d\n", packet, HEADER_LEN + packet->length);
+        if (debug > 18) printf("REALLOCATE QUEUED PACKET %p TO LENGTH %d\n", packet, HEADER_LEN + packet->length);
         packet = this->packet = realloc(packet, HEADER_LEN + packet->length);
-        if (debug > 8) printf("DONE REALLOCATE: NEW PACKET %p\n", packet);
+        if (debug > 18) printf("DONE REALLOCATE: NEW PACKET %p\n", packet);
         this->retransmits = 0;
 
         if (debug > 8) printf("ADD PACKET TO QUEUE %p\n", this);
@@ -640,19 +685,18 @@ int up_client(int argc, char **argv) {
           queued++;
           if (debug > 10) dump_queue(packet_queue, queue_tail, queued);
           if (debug > 8) printf("QUEUE ENTRY %p COUNT %d\n", this, queued);
-          if (debug > 5) printf("CLIENT QUEUE PACKET [%p]: TYPE:%c SEQ:%ld LENGTH:%d\n", packet, packet->type, (long)packet->seq, packet->length);
+          if (debug > 5) printf("QUEUE PACKET [%p]: TYPE:%c SEQ:%ld LENGTH:%d\n", packet, packet->type, (long)packet->seq, packet->length);
         } else {
           perror("adding packet to queue");
           return EXIT_FAILURE;
         }
 
         // Send payload
-        if (debug > 0) printf("SEND PACKET [%p]: TYPE:%c SEQ:%ld LENGTH:%d TO %lx:%d\n", packet, packet->type, (long)packet->seq, packet->length, (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
+        if (debug > 5) printf("SEND %c SEQ:%ld LENGTH:%d TO %lx:%d\n", packet->type, (long)packet->seq, packet->length, (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
 				hton_packet(packet);
         sendto(sockfd, packet, HEADER_LEN + n, 0, (struct sockaddr *) &addr, sizeof(addr));
 				ntoh_packet(packet);
         stats.packets_sent++;
-        if (debug > 5) printf("SEND DONE\n");
 
         // We gave the packet to the packet queue
         packet = NULL;
@@ -664,18 +708,15 @@ int up_client(int argc, char **argv) {
 
     if (queued || starting) {
 
-      if (debug > 5) printf("QUEUE SIZE %d\n", queued);
-
       // Allocate a packet buffer
       if (!packet) {
         if ((packet = malloc(HEADER_LEN + payload_len)) == NULL) {
           perror("allocating payload buffer");
           return EXIT_FAILURE;
         }
-        if (debug > 8) printf("ALLOCATED PACKET BUFFER: %p LENGTH %d\n", packet, HEADER_LEN + payload_len);
+        if (debug > 18) printf("ALLOCATED PACKET BUFFER: %p LENGTH %d\n", packet, HEADER_LEN + payload_len);
       }
 
-      if (debug > 5) printf("RECV PACKET\n");
       len = sizeof(addr);
       n = recvfrom(sockfd, packet, HEADER_LEN + payload_len, eof ? 0 : MSG_DONTWAIT, (struct sockaddr *) &addr, &len);
       if (n == -1) {
@@ -693,21 +734,31 @@ int up_client(int argc, char **argv) {
 				packet->seq = ntohl(packet->seq);
 				if (n >= HEADER_LEN) packet->length = ntohs(packet->length);
 
-        if (debug > 0) printf("RESPONSE: TYPE:%c SEQ:%ld LEN:%d LENGTH:%d\n", packet->type, (long)packet->seq, n, n >= 12 ? packet->length : 0);
+        if (debug > 5) printf("RECV %c SEQ:%ld LEN:%d LENGTH:%d\n", packet->type, (long)packet->seq, n, n >= 12 ? packet->length : 0);
         stats.packets_received++;
 
         // Process packet
         switch(packet->type) {
-        case 'A': // handle ack 
+        case ACK_PACKET: // handle ack 
           remove_acked_packets_from_queue(&packet_queue, &queue_tail, packet->seq, &queued);
+					if (eof && queued == 0) {
+						// If we just got an ack for the EOF, then we know the server
+						// has written all data, and we can exit, tell the server to
+						// exit by sending a FIN.
+						send_fin(sockfd, &addr);
+					}
           break;
-        case 'S': // server has started
+				case FIN_PACKET:
+					// ignore FIN
+					break;
+        case SYN_PACKET: // server has started
 					if (starting) {
 						starting = 0;
 						stats.transfer_start = nowms();
+						stats.sleeping = 0;
 					}
           break;
-        case 'N': // handle nack
+        case NAK_PACKET: // handle nack
           {
 						uint32_t got_seq = ntohl(*((long *)packet->payload));
 						if (debug > 0) printf("GOT NACK FOR SEQ %ld:%ld\n", (long)packet->seq, (long)got_seq);
@@ -730,17 +781,22 @@ int up_client(int argc, char **argv) {
 							}
 							packet->seq ++;
             }
+						throttle = throttle ? throttle * 2 : 8;
+						printf("THROTTLE %ld\n", throttle);
           }
           break;
         }
       } else {
-				long delay = 1;
+				long delay = 0;
         if (starting) {
-					delay = 10 * starting;
+					delay = 10 * starting * 1000;
           if (starting < 100) starting *= 2;
         }
-				if (debug > 8) printf("NO RESPONSE sleep %ldms\n", delay);
-				usleep(delay * 1000);
+				if (delay) {
+					if (debug > 8) printf("NO RESPONSE sleep %ldus\n", delay);
+					usleep(delay);
+					stats.sleeping += delay;
+				}
       }
     }
   }
@@ -757,8 +813,8 @@ int up_client(int argc, char **argv) {
     long end = stats.transfer_end;
     long startup = stats.start;
     long bps = (long) (stats.bytes / ((end - start) / 1000.0));
-    printf("%ld bytes transfered in %ldms (%.2lf KB/s) startup %ldms\n", stats.bytes, (end - start)/1000, bps/1024.0, (start-startup)/1000);
-    printf("%ld packets received, %ld packets sent, %ld retransmissions\n", stats.packets_received, stats.packets_sent, stats.retransmits);
+    printf("%ld bytes transfered in %ldms (%.2lf KB/s) startup %ldms\n", stats.bytes, (end - start), bps/1024.0, (start-startup)/1000);
+    printf("%ld packets received, %ld packets sent, %ld retransmissions %ldus waiting\n", stats.packets_received, stats.packets_sent, stats.retransmits, stats.sleeping);
   }
 
   return 0;
