@@ -69,6 +69,8 @@ typedef struct stats stats_t;
 int CLIENT_PACKET_QUEUE_LIMIT = 50;
 int SERVER_PACKET_QUEUE_LIMIT = 1000;
 int SERVER_NACK_THRESHOLD = 5;
+int ACK_EVERY = 10;
+int THROTTLE_ON_NACK = 0;
 
 void DBG(int level, char *pattern, ...) {
 	va_list args;
@@ -526,7 +528,9 @@ int up_server(int argc, char **argv) {
 				last_nack = 0;
 
         // Ack this packet
-        send_ack(sockfd, packet->seq, &caddr);
+        if (packet->seq % ACK_EVERY == 0 || packet->type != PAY_PACKET) {
+					send_ack(sockfd, packet->seq, &caddr);
+				}
       }
 
 			// PROTOCOL: {{
@@ -764,7 +768,7 @@ int up_client(int argc, char **argv) {
 					if (verbose && tick - last_output > 1000) {
 						long end = nowms();
 						long bps = (long) (stats.bytes / ((end - stats.transfer_start) / 1000.0));
-						fprintf(stderr, "%ld %.2lfKB/s\r", (long)packet->seq, (double)bps/1024.0);
+						fprintf(stderr, "%ld %.2lfKB/s queue %d\r", (long)packet->seq, (double)bps/1024.0, queued);
 						fflush(stderr);
 						last_output = end;
 					}
@@ -808,7 +812,9 @@ int up_client(int argc, char **argv) {
 							}
 							packet->seq ++;
             }
-						throttle = throttle ? throttle * 2 : 1;
+						if (THROTTLE_ON_NACK) {
+							throttle = throttle ? throttle * 2 : 1;
+						}
           }
           break;
 				case ERR_PACKET:
