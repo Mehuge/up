@@ -61,7 +61,7 @@ struct stats {
   long packets_sent;
   long packets_received;
   long retransmits;
-	long sleeping;
+  long sleeping;
 };
 
 typedef struct stats stats_t;
@@ -73,19 +73,19 @@ int ACK_EVERY = 10;
 int THROTTLE_ON_NACK = 0;
 
 void DBG(int level, char *pattern, ...) {
-	va_list args;
-	if (level <= debug) {
-		va_start(args, pattern);
-		vfprintf(stderr, pattern, args);
-		fflush(stderr);
-		va_end(args);
-	}
+  va_list args;
+  if (level <= debug) {
+    va_start(args, pattern);
+    vfprintf(stderr, pattern, args);
+    fflush(stderr);
+    va_end(args);
+  }
 }
 
 long nowms() {
-	struct timeval tv;
-	gettimeofday(&tv, NULL);
-	return tv.tv_sec * 1000 + tv.tv_usec / 1000;
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
 pid_t ssh_run_server(char *remote, char *host, int port) {
@@ -163,9 +163,9 @@ void dump_queue(packet_queue_t *head, packet_queue_t *tail, int queued) {
   packet_queue_t *entry = head;
   while (entry) {
     DBG(0, "  ENTRY %11p NEXT %11p PACKET %11p TYPE %c SEQ %ld LENGTH %4d PAYLOAD %11p\n",
-			entry, entry->next, entry->packet, entry->packet->type,
-			(long)entry->packet->seq, entry->packet->length, entry->packet->payload
-		);
+      entry, entry->next, entry->packet, entry->packet->type,
+      (long)entry->packet->seq, entry->packet->length, entry->packet->payload
+    );
     entry = entry->next;
   }
 }
@@ -219,24 +219,24 @@ packet_queue_t *find_packet_in_queue(packet_queue_t *entry, long seq) {
 //     Payload:
 //       Have Sequence: <lowest queued sequence>
 //
-//	A nack tells the client the sequence the server was expecting, and also the sequence of
-//	the first packet (lowest sequence) currently being held in a queue by the server. The 
-//	range defined by this indicates the range of probable lost packets, which the client
-//	can then resend.
+//  A nack tells the client the sequence the server was expecting, and also the sequence of
+//  the first packet (lowest sequence) currently being held in a queue by the server. The 
+//  range defined by this indicates the range of probable lost packets, which the client
+//  can then resend.
 //
 // }}
 
 int send_nack(int sockfd, uint32_t want_seq, uint32_t have_seq, struct sockaddr_in *addr) {
-	packet_t nack;
-	nack.type = 'N';
-	nack.reserved[0] = nack.reserved[1] = nack.reserved[2] = 0;
-	nack.seq = htonl(want_seq);
-	*((uint32_t *)nack.payload) = htonl(have_seq);
-	nack.length = sizeof(uint32_t);
-	DBG(5, "SEND %c SEQ:%ld HAVE:%ld LENGTH:%d TO %lx:%d\n", nack.type,
-		(long)want_seq, (long)have_seq, HEADER_LEN + nack.length, (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)
-	);
-	return sendto(sockfd, &nack, HEADER_LEN + nack.length, 0, (struct sockaddr *) addr, sizeof(*addr));
+  packet_t nack;
+  nack.type = 'N';
+  nack.reserved[0] = nack.reserved[1] = nack.reserved[2] = 0;
+  nack.seq = htonl(want_seq);
+  *((uint32_t *)nack.payload) = htonl(have_seq);
+  nack.length = sizeof(uint32_t);
+  DBG(5, "SEND %c SEQ:%ld HAVE:%ld LENGTH:%d TO %lx:%d\n", nack.type,
+    (long)want_seq, (long)have_seq, HEADER_LEN + nack.length, (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port)
+  );
+  return sendto(sockfd, &nack, HEADER_LEN + nack.length, 0, (struct sockaddr *) addr, sizeof(*addr));
 }
 
 // PROTOCOL: {{
@@ -248,49 +248,49 @@ int send_nack(int sockfd, uint32_t want_seq, uint32_t have_seq, struct sockaddr_
 //     Payload:
 //       Have Sequence: <lowest queued sequence>
 //
-//	An ack tells the client the sequence the server has processed (received and written)
-//	the packet for this sequence. The client can assume that all packets up to and including
-//	that sequence have been successfully processed by the server. Indeed the server may not
-//	send an ack for every packet.
+//  An ack tells the client the sequence the server has processed (received and written)
+//  the packet for this sequence. The client can assume that all packets up to and including
+//  that sequence have been successfully processed by the server. Indeed the server may not
+//  send an ack for every packet.
 //
-//	The server will only ever ack a packet that has been received and written in the correct
-//	order, therefore all packets with sequences lower than the ack sequence must also have been
-//	successfully processed by the server
+//  The server will only ever ack a packet that has been received and written in the correct
+//  order, therefore all packets with sequences lower than the ack sequence must also have been
+//  successfully processed by the server
 //
 // }}
 
 int send_ack(int sockfd, uint32_t got_seq, struct sockaddr_in *addr) {
-	packet_t ack;
-	ack.type = ACK_PACKET;
-	ack.reserved[0] = ack.reserved[1] = ack.reserved[2] = 0;
-	ack.seq = htonl(got_seq);
-	DBG(5, "SEND %c SEQ:%ld LENGTH:%d TO %lx:%d\n", ack.type, (long)got_seq, OFFSETOF(ack,length), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port));
-	return sendto(sockfd, &ack, OFFSETOF(ack,length), 0, (struct sockaddr *)addr, sizeof(*addr));
+  packet_t ack;
+  ack.type = ACK_PACKET;
+  ack.reserved[0] = ack.reserved[1] = ack.reserved[2] = 0;
+  ack.seq = htonl(got_seq);
+  DBG(5, "SEND %c SEQ:%ld LENGTH:%d TO %lx:%d\n", ack.type, (long)got_seq, OFFSETOF(ack,length), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port));
+  return sendto(sockfd, &ack, OFFSETOF(ack,length), 0, (struct sockaddr *)addr, sizeof(*addr));
 }
 
 // PROTOCOL: {{
 // }}
 
 int send_syn(int sockfd, struct sockaddr_in *addr) {
-	packet_t syn;
+  packet_t syn;
   syn.type = SYN_PACKET;
   DBG(5, "SEND %c LENGTH:%d TO %lx:%d\n", syn.type, OFFSETOF(syn,reserved), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port));
   return sendto(sockfd, &syn, OFFSETOF(syn,reserved), 0, (struct sockaddr *) addr, sizeof(*addr));
 }
 
 int send_fin(int sockfd, struct sockaddr_in *addr) {
-	packet_t fin;
+  packet_t fin;
   fin.type = FIN_PACKET;
   DBG(5, "SEND %c LENGTH:%d TO %lx:%d\n", fin.type, OFFSETOF(fin,reserved), (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port));
   return sendto(sockfd, &fin, OFFSETOF(fin,reserved), 0, (struct sockaddr *) addr, sizeof(*addr));
 }
 
 int send_err(int sockfd, struct sockaddr_in *addr, char *error, ...) {
-	va_list args;
-	packet_t err;
+  va_list args;
+  packet_t err;
   err.type = ERR_PACKET;
-	vsprintf(err.payload, error, args);
-	err.length = strlen(err.payload) + 1;
+  vsprintf(err.payload, error, args);
+  err.length = strlen(err.payload) + 1;
   DBG(5, "SEND %c LENGTH:%d TO %lx:%d\n", err.type, HEADER_LEN + err.length, (unsigned long)addr->sin_addr.s_addr, ntohs(addr->sin_port));
   return sendto(sockfd, &err, HEADER_LEN + err.length, 0, (struct sockaddr *) addr, sizeof(*addr));
 }
@@ -300,25 +300,25 @@ int send_err(int sockfd, struct sockaddr_in *addr, char *error, ...) {
 // be called around a sendto() call.
 
 void hton_packet(packet_t *packet) {
-	packet->seq = htonl(packet->seq);
-	packet->length = htons(packet->length);
+  packet->seq = htonl(packet->seq);
+  packet->length = htons(packet->length);
 }
 
 void ntoh_packet(packet_t *packet) {
-	packet->seq = ntohl(packet->seq);
-	packet->length = ntohs(packet->length);
+  packet->seq = ntohl(packet->seq);
+  packet->length = ntohs(packet->length);
 }
 
 int write_packet(packet_t *packet, int sockfd, struct sockaddr_in *addr) {
-	int n = write(1, packet->payload, packet->length);
-	if (n == packet->length) {
-		DBG(5, "WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", packet->type, packet->seq, packet->payload, packet->length);
-		return n;
-	}
-	perror("write");
-	send_err(sockfd, addr, "write failed, n:%d errno %d: %s", n, errno, strerror(errno));
-	send_fin(sockfd, addr);
-	return EXIT_FAILURE;
+  int n = write(1, packet->payload, packet->length);
+  if (n == packet->length) {
+    DBG(5, "WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", packet->type, packet->seq, packet->payload, packet->length);
+    return n;
+  }
+  perror("write");
+  send_err(sockfd, addr, "write failed, n:%d errno %d: %s", n, errno, strerror(errno));
+  send_fin(sockfd, addr);
+  return EXIT_FAILURE;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////
@@ -328,20 +328,20 @@ int write_packet(packet_t *packet, int sockfd, struct sockaddr_in *addr) {
 // up --receive server-ip port [client-ip]
 int up_server(int argc, char **argv) {
   struct sockaddr_in addr, caddr;
-  long want_seq = 0;								// PROTOCOL: The next packet sequence we are expecting
-	long last_nack = 0;								// PROTOCOL: Time the last nack was sent
+  long want_seq = 0;                // PROTOCOL: The next packet sequence we are expecting
+  long last_nack = 0;                // PROTOCOL: Time the last nack was sent
   char *ip;
   int port;
   socklen_t len;
   int n;
   int sockfd;
   long eof = 0;
-	long fin = 0;
-	long ms;
-	long took;
-	int sav_errno;
+  long fin = 0;
+  long ms;
+  long took;
+  int sav_errno;
   packet_t *packet = NULL;
-	stats_t stats;
+  stats_t stats;
 
   packet_queue_t *packet_queue = NULL;
   packet_queue_t *queue_tail = NULL;
@@ -351,7 +351,7 @@ int up_server(int argc, char **argv) {
   ip = shift;
   port = ishift;
 
-	// Initialise stats
+  // Initialise stats
   memset(&stats, 0, sizeof(stats));
   stats.start = nowms();
 
@@ -382,7 +382,7 @@ int up_server(int argc, char **argv) {
   caddr.sin_addr.s_addr = INADDR_ANY;
 
   while (!fin) {
-		long ack_seq = -1;
+    long ack_seq = -1;
 
     if (packet_queue) DBG(9, "- TICK - PACKET_QUEUE %p SEQ_W %ld QUEUED PACKET SEQ %ld\n", packet_queue, want_seq, (long)packet_queue->packet->seq);
 
@@ -395,17 +395,17 @@ int up_server(int argc, char **argv) {
       if (!packet_queue) queue_tail = NULL;
       queued --;
 
-			// Track which packet to ack.
-			ack_seq = want_seq;
+      // Track which packet to ack.
+      ack_seq = want_seq;
       want_seq++;
-			if (this->packet->type == EOF_PACKET) {
-				eof = nowms();
+      if (this->packet->type == EOF_PACKET) {
+        eof = nowms();
         DBG(5, "DRAIN: EOF\n");
-			} else {
-				if (write_packet(this->packet, sockfd, &caddr) == EXIT_FAILURE) {
-					return EXIT_FAILURE;
-				}
-			}
+      } else {
+        if (write_packet(this->packet, sockfd, &caddr) == EXIT_FAILURE) {
+          return EXIT_FAILURE;
+        }
+      }
 
       // Free packet
       free(this->packet);
@@ -414,11 +414,11 @@ int up_server(int argc, char **argv) {
       if (debug > 10) dump_queue(packet_queue, queue_tail, queued);
     }
 
-		// We drained the queue, need to ack the last packet drained
-		if (ack_seq > -1) {
-			DBG(5, "SEND DRAIN QUEUE ACK %ld\n", ack_seq);
-			send_ack(sockfd, ack_seq, &caddr);
-		}
+    // We drained the queue, need to ack the last packet drained
+    if (ack_seq > -1) {
+      DBG(5, "SEND DRAIN QUEUE ACK %ld\n", ack_seq);
+      send_ack(sockfd, ack_seq, &caddr);
+    }
 
     // Allocate a packet buffer if needed
     if (!packet) {
@@ -431,84 +431,84 @@ int up_server(int argc, char **argv) {
 
     len = sizeof(caddr);
     DBG(5, "%ld: RECV FROM %lx:%d...\n", nowms(), (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
-		ms = nowms();
+    ms = nowms();
     n = recvfrom(sockfd, packet, HEADER_LEN + payload_len, queued ? MSG_DONTWAIT : 0, (struct sockaddr *) &caddr, &len);
-		sav_errno = errno;
-		took = nowms() - ms;
-	
-		if (n < 0 && sav_errno != EAGAIN) {
-			errno = sav_errno;
-			perror("recvfrom");
-			printf("n:%d errno:%d\n", n, errno);
-			sleep(1);
-		}
+    sav_errno = errno;
+    took = nowms() - ms;
+  
+    if (n < 0 && sav_errno != EAGAIN) {
+      errno = sav_errno;
+      perror("recvfrom");
+      printf("n:%d errno:%d\n", n, errno);
+      sleep(1);
+    }
 
-		// PROTOCOL: {{
-		//   
-		// }}
-		
-		else if (n < 0) {
+    // PROTOCOL: {{
+    //   
+    // }}
+    
+    else if (n < 0) {
 
-			if (last_nack > 0 && (nowms() - last_nack > 1000)) {
-				DBG(5,"RESEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld\n", want_seq, queued, last_nack);
-				send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
-				last_nack = nowms();
-			} else {
-				usleep(10);
-				stats.sleeping += 10;
-			}
+      if (last_nack > 0 && (nowms() - last_nack > 1000)) {
+        DBG(5,"RESEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld\n", want_seq, queued, last_nack);
+        send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
+        last_nack = nowms();
+      } else {
+        usleep(10);
+        stats.sleeping += 10;
+      }
     } 
 
-		// PROTOCOL: {{
-		//   
-		// }}
-		
-		else if (n == 0) {
-			DBG(0, "DO WE EVER SEE THIS? WAIT 1ms");
-			usleep(1000);
-			stats.sleeping += 1000;
-		}
+    // PROTOCOL: {{
+    //   
+    // }}
+    
+    else if (n == 0) {
+      DBG(0, "DO WE EVER SEE THIS? WAIT 1ms");
+      usleep(1000);
+      stats.sleeping += 1000;
+    }
 
-		else {
+    else {
 
-			packet->seq = ntohl(packet->seq);
-			if (n >= HEADER_LEN) packet->length = ntohs(packet->length);
+      packet->seq = ntohl(packet->seq);
+      if (n >= HEADER_LEN) packet->length = ntohs(packet->length);
 
-			DBG(5, "RECV: TYPE:%c SEQ:%ld LEN:%d PAYLOAD LENGTH %d FROM %lx:%d\n", packet->type, (long)packet->seq, n, packet->length, (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
+      DBG(5, "RECV: TYPE:%c SEQ:%ld LEN:%d PAYLOAD LENGTH %d FROM %lx:%d\n", packet->type, (long)packet->seq, n, packet->length, (unsigned long)caddr.sin_addr.s_addr, ntohs(caddr.sin_port));
       DBG(5, "PACKET SEQ %ld SEQ_W %ld\n", (long)packet->seq, want_seq);
 
-			// PROTOCOL: {{
-			//
-			// 	 If the client sends a S(tart) packet, respond with a S(tart) packet.
-			//   The client does this so that it knows the server is ready to start receiving
-			//   the data, otherwise the data will be lost and would need resending.
-			//
-			//   It is not a requirement of the protocol for the client to send a start
-			//   packet, if the client knows the server is ready it can just start sending
-			//   packets.
-			//
-			// }}
+      // PROTOCOL: {{
+      //
+      //    If the client sends a S(tart) packet, respond with a S(tart) packet.
+      //   The client does this so that it knows the server is ready to start receiving
+      //   the data, otherwise the data will be lost and would need resending.
+      //
+      //   It is not a requirement of the protocol for the client to send a start
+      //   packet, if the client knows the server is ready it can just start sending
+      //   packets.
+      //
+      // }}
       if (packet->type == SYN_PACKET) {      // client sent SYN
-				send_syn(sockfd, &caddr);
+        send_syn(sockfd, &caddr);
       }
 
-			// PROTOCOL: {{
-			//   The client sends a FIN after receiving the ACK packet for the EOF packet.
-			// }}
-			else if (packet->type == FIN_PACKET) {
-				fin = nowms();
-				send_fin(sockfd, &caddr);
-			}
+      // PROTOCOL: {{
+      //   The client sends a FIN after receiving the ACK packet for the EOF packet.
+      // }}
+      else if (packet->type == FIN_PACKET) {
+        fin = nowms();
+        send_fin(sockfd, &caddr);
+      }
 
-			// PROTOCOL: {{
-			//
-			//   If the sequence of the packet just received is the sequence we were expecting, then
-			//   if the packet type was E(of) then we signal end of file (transfer) otherwisde we 
-			//   write the data to the output stream. 
-			//
-			//   In either case, we A(ck) the packet.
-			//
-			// }}
+      // PROTOCOL: {{
+      //
+      //   If the sequence of the packet just received is the sequence we were expecting, then
+      //   if the packet type was E(of) then we signal end of file (transfer) otherwisde we 
+      //   write the data to the output stream. 
+      //
+      //   In either case, we A(ck) the packet.
+      //
+      // }}
       else if (packet->seq == want_seq) {
         if (packet->type == EOF_PACKET) {
           // EOF
@@ -519,32 +519,32 @@ int up_server(int argc, char **argv) {
           DBG(5, "WRITE: TYPE:%c SEQ:%d, BUFFER:%p LENGTH:%d\n", packet->type, packet->seq, packet->payload, packet->length);
           if (packet->length) {
             if (debug > 18) hex_dump(packet->payload, packet->length);
-						if (write_packet(packet, sockfd, &caddr) == EXIT_FAILURE) {
-							return EXIT_FAILURE;
-						}
+            if (write_packet(packet, sockfd, &caddr) == EXIT_FAILURE) {
+              return EXIT_FAILURE;
+            }
           }
         }
         want_seq++;
-				last_nack = 0;
+        last_nack = 0;
 
         // Ack this packet
         if (packet->seq % ACK_EVERY == 0 || packet->type != PAY_PACKET) {
-					send_ack(sockfd, packet->seq, &caddr);
-				}
+          send_ack(sockfd, packet->seq, &caddr);
+        }
       }
 
-			// PROTOCOL: {{
-			//
-			//   If the sequence of the packet receivied is greater than the sequence we were expecting
-			//   that means either that the packets are out of order, or that a packet was lost. In order
-			//   to avoid N(acking) an out of order packet, only N(ack) the missing sequence once the
-			//   queued packets list reaches a threshold.
-			//
-			// }}
+      // PROTOCOL: {{
+      //
+      //   If the sequence of the packet receivied is greater than the sequence we were expecting
+      //   that means either that the packets are out of order, or that a packet was lost. In order
+      //   to avoid N(acking) an out of order packet, only N(ack) the missing sequence once the
+      //   queued packets list reaches a threshold.
+      //
+      // }}
       else if (packet->seq > want_seq) {
         packet_queue_t *this = NULL;
 
-				DBG(0,"OUT OF ORDER PACKET: SEQ %ld SEQ_W %ld QUEUED %d\n", (long)packet->seq, want_seq, queued);
+        DBG(0,"OUT OF ORDER PACKET: SEQ %ld SEQ_W %ld QUEUED %d\n", (long)packet->seq, want_seq, queued);
 
         // Drop packets once the queue reaches the server queue limit, or we run out of memory.
         if (queued < SERVER_PACKET_QUEUE_LIMIT && (this = malloc(sizeof (packet_queue_t)))) {
@@ -562,7 +562,7 @@ int up_server(int argc, char **argv) {
 
           packet = NULL;
         } else {
-					DBG(1, "DROP PACKET\n");
+          DBG(1, "DROP PACKET\n");
           // drop packet, queue full
           // TODO: Note, atm this drops the just received packet, but should it
           // drop the highest sequence packet instead?
@@ -571,21 +571,21 @@ int up_server(int argc, char **argv) {
         // NAK packet sequence not received
         if (queued == SERVER_NACK_THRESHOLD || (last_nack > 0 && nowms() - last_nack > 1000)) {
           DBG(5, "SEND NACK FOR SEQ %ld QUEUED %d LAST_NACK %ld AGE %ld\n", want_seq, queued, last_nack, (nowms() - last_nack));
-					send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
-					last_nack = nowms();
+          send_nack(sockfd, want_seq, packet_queue->packet->seq, &caddr);
+          last_nack = nowms();
         }
       }
 
-			// PROTOCOL: {{
-			//
-			//   If n we receive a packet we have already processed then it is because the
-			//   client never got the A(ck) for it, so resend the A(ck).
-			//
-			// }}
-			else {
+      // PROTOCOL: {{
+      //
+      //   If n we receive a packet we have already processed then it is because the
+      //   client never got the A(ck) for it, so resend the A(ck).
+      //
+      // }}
+      else {
         // ACK old packets (to tell client to stop sending them)
-				DBG(1, "RESEND ACK: FOR SEQ:%ld\n", (long)packet->seq);
-				send_ack(sockfd, packet->seq, &caddr);
+        DBG(1, "RESEND ACK: FOR SEQ:%ld\n", (long)packet->seq);
+        send_ack(sockfd, packet->seq, &caddr);
       }
     }
   }
@@ -617,9 +617,9 @@ int up_client(int argc, char **argv) {
   int port;
   int starting = 1;
   stats_t stats;
-	long throttle = 0;
-	long tick = 0;
-	long last_output = 0;
+  long throttle = 0;
+  long tick = 0;
+  long last_output = 0;
 
   // Initialise statistics
   memset(&stats, 0, sizeof(stats));
@@ -658,21 +658,21 @@ int up_client(int argc, char **argv) {
   // Protocol loops runs while we have input, or there are queued (unacked) packets.
   while (!eof || queued) {
 
-		tick = nowms();
+    tick = nowms();
 
-		if (throttle > 0) {
-			usleep(throttle);
-			stats.sleeping += throttle;
-		}
+    if (throttle > 0) {
+      usleep(throttle);
+      stats.sleeping += throttle;
+    }
 
     DBG(5, "-- eof:%d queued:%d starting:%d throttle:%ld\n", eof, queued, starting, throttle);
 
-		// PROTOCOL: {{
-		// 	 If starting, send a SYN packet to the server. The server will respond by 
-		// 	 sending a SYN as an acknowledgement when it is ready.
-		// }}
+    // PROTOCOL: {{
+    //    If starting, send a SYN packet to the server. The server will respond by 
+    //    sending a SYN as an acknowledgement when it is ready.
+    // }}
     if (starting) {
-			send_syn(sockfd, &addr);
+      send_syn(sockfd, &addr);
       stats.packets_sent++;
     }
 
@@ -720,9 +720,9 @@ int up_client(int argc, char **argv) {
 
         // Send payload
         DBG(5, "SEND %c SEQ:%ld LENGTH:%d TO %lx:%d\n", packet->type, (long)packet->seq, packet->length, (unsigned long)addr.sin_addr.s_addr, ntohs(addr.sin_port));
-				hton_packet(packet);
+        hton_packet(packet);
         sendto(sockfd, packet, HEADER_LEN + n, 0, (struct sockaddr *) &addr, sizeof(addr));
-				ntoh_packet(packet);
+        ntoh_packet(packet);
         stats.packets_sent++;
 
         // We gave the packet to the packet queue
@@ -755,8 +755,8 @@ int up_client(int argc, char **argv) {
       }
 
       if (n > 0) {
-				// Convert packet to host form
-				ntoh_packet(packet);
+        // Convert packet to host form
+        ntoh_packet(packet);
         stats.packets_received++;
 
         DBG(5,"RECV %c SEQ:%ld LEN:%d LENGTH:%d\n", packet->type, (long)packet->seq, n, n >= 12 ? packet->length : 0);
@@ -765,72 +765,72 @@ int up_client(int argc, char **argv) {
         switch(packet->type) {
         case ACK_PACKET: // handle ack 
           remove_acked_packets_from_queue(&packet_queue, &queue_tail, packet->seq, &queued);
-					if (verbose && tick - last_output > 1000) {
-						long end = nowms();
-						long bps = (long) (stats.bytes / ((end - stats.transfer_start) / 1000.0));
-						fprintf(stderr, "%ld %.2lfKB/s queue %d\r", (long)packet->seq, (double)bps/1024.0, queued);
-						fflush(stderr);
-						last_output = end;
-					}
-					if (eof && queued == 0) {
-						// If we just got an ack for the EOF, then we know the server
-						// has written all data, and we can exit, tell the server to
-						// exit by sending a FIN.
-						send_fin(sockfd, &addr);
-					}
+          if (verbose && tick - last_output > 1000) {
+            long end = nowms();
+            long bps = (long) (stats.bytes / ((end - stats.transfer_start) / 1000.0));
+            fprintf(stderr, "%ld %.2lfKB/s queue %d\r", (long)packet->seq, (double)bps/1024.0, queued);
+            fflush(stderr);
+            last_output = end;
+          }
+          if (eof && queued == 0) {
+            // If we just got an ack for the EOF, then we know the server
+            // has written all data, and we can exit, tell the server to
+            // exit by sending a FIN.
+            send_fin(sockfd, &addr);
+          }
           break;
-				case FIN_PACKET:
-					// ignore FIN
-					break;
+        case FIN_PACKET:
+          // ignore FIN
+          break;
         case SYN_PACKET: // server has started
-					if (starting) {
-						starting = 0;
-						stats.transfer_start = nowms();
-						stats.sleeping = 0;
-					}
+          if (starting) {
+            starting = 0;
+            stats.transfer_start = nowms();
+            stats.sleeping = 0;
+          }
           break;
         case NAK_PACKET: // handle nack
           {
-						uint32_t got_seq = ntohl(*((long *)packet->payload));
-						DBG(1, "GOT NACK FOR SEQ %ld:%ld\n", (long)packet->seq, (long)got_seq);
-						if (debug > 10) dump_queue(packet_queue, queue_tail, queued);
-						while (packet->seq < got_seq) {
-							packet_queue_t *entry = find_packet_in_queue(packet_queue, packet->seq);
-							if (entry) {
-								// resend this packet
-								long paylen = entry->packet->length;
-								DBG(1, "RESEND NACKED PACKET %p TYPE:%c SEQ:%ld LENGTH:%d\n", entry->packet, entry->packet->type, (long)entry->packet->seq, entry->packet->length);
-								hton_packet(entry->packet);
-								sendto(sockfd, entry->packet, HEADER_LEN + paylen, 0, (struct sockaddr *) &addr, sizeof(addr));
-								ntoh_packet(entry->packet);
-								stats.packets_sent++;
-								stats.retransmits++;
-								entry->retransmits++;
-							} else {
-								perror("missing packet");
-								return EXIT_FAILURE;
-							}
-							packet->seq ++;
+            uint32_t got_seq = ntohl(*((long *)packet->payload));
+            DBG(1, "GOT NACK FOR SEQ %ld:%ld\n", (long)packet->seq, (long)got_seq);
+            if (debug > 10) dump_queue(packet_queue, queue_tail, queued);
+            while (packet->seq < got_seq) {
+              packet_queue_t *entry = find_packet_in_queue(packet_queue, packet->seq);
+              if (entry) {
+                // resend this packet
+                long paylen = entry->packet->length;
+                DBG(1, "RESEND NACKED PACKET %p TYPE:%c SEQ:%ld LENGTH:%d\n", entry->packet, entry->packet->type, (long)entry->packet->seq, entry->packet->length);
+                hton_packet(entry->packet);
+                sendto(sockfd, entry->packet, HEADER_LEN + paylen, 0, (struct sockaddr *) &addr, sizeof(addr));
+                ntoh_packet(entry->packet);
+                stats.packets_sent++;
+                stats.retransmits++;
+                entry->retransmits++;
+              } else {
+                perror("missing packet");
+                return EXIT_FAILURE;
+              }
+              packet->seq ++;
             }
-						if (THROTTLE_ON_NACK) {
-							throttle = throttle ? throttle * 2 : 1;
-						}
+            if (THROTTLE_ON_NACK) {
+              throttle = throttle ? throttle * 2 : 1;
+            }
           }
           break;
-				case ERR_PACKET:
-					DBG(0, "remote error: %s\n", packet->payload);
-					return EXIT_FAILURE;
+        case ERR_PACKET:
+          DBG(0, "remote error: %s\n", packet->payload);
+          return EXIT_FAILURE;
         }
       } else {
-				long delay = 0;
+        long delay = 0;
         if (starting) {
-					delay = 10 * starting * 1000;
+          delay = 10 * starting * 1000;
           if (starting < 100) starting *= 2;
         }
-				if (delay) {
-					usleep(delay);
-					stats.sleeping += delay;
-				}
+        if (delay) {
+          usleep(delay);
+          stats.sleeping += delay;
+        }
       }
     }
   }
@@ -901,3 +901,7 @@ int main(int argc, char **argv) {
   /* Run client mode */
   return up_client(argc, argv);
 }
+
+/* 
+ * vi:ts=2 sw=2 expandtab 
+ */
