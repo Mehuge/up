@@ -241,14 +241,12 @@ int send_nack(int sockfd, uint32_t want_seq, uint32_t have_seq, struct sockaddr_
 
 // PROTOCOL: {{
 //
-//   NACK:
-//     Packet Type: N
-//     Sequence: <expected sequence>
-//     Payload Length: 4
-//     Payload:
-//       Have Sequence: <lowest queued sequence>
+//   ACK:
+//     Packet Type: A
+//     Sequence: <processed sequence>
+//     Payload Length: 0
 //
-//  An ack tells the client the sequence the server has processed (received and written)
+//  An ack tells the client the server has processed (received and written)
 //  the packet for this sequence. The client can assume that all packets up to and including
 //  that sequence have been successfully processed by the server. Indeed the server may not
 //  send an ack for every packet.
